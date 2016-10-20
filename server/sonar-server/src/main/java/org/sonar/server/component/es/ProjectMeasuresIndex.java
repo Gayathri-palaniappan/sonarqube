@@ -21,16 +21,17 @@ package org.sonar.server.component.es;
 
 import com.google.common.collect.ImmutableList;
 import java.util.List;
-import java.util.stream.IntStream;
 import java.util.Set;
+import java.util.stream.IntStream;
 import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.aggregations.AggregationBuilder;
 import org.elasticsearch.search.aggregations.AggregationBuilders;
-import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.aggregations.bucket.range.RangeBuilder;
 import org.elasticsearch.search.sort.SortOrder;
+import org.sonar.api.measures.Metric;
 import org.sonar.server.component.es.ProjectMeasuresQuery.MetricCriterion;
 import org.sonar.server.es.BaseIndex;
 import org.sonar.server.es.EsClient;
@@ -44,20 +45,23 @@ import static org.elasticsearch.index.query.QueryBuilders.nestedQuery;
 import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termsQuery;
-import static org.elasticsearch.search.aggregations.AggregationBuilders.filters;
+import static org.sonar.api.measures.CoreMetrics.ALERT_STATUS_KEY;
 import static org.sonar.api.measures.CoreMetrics.COVERAGE_KEY;
 import static org.sonar.api.measures.CoreMetrics.DUPLICATED_LINES_DENSITY_KEY;
 import static org.sonar.api.measures.CoreMetrics.NCLOC_KEY;
 import static org.sonar.api.measures.CoreMetrics.RELIABILITY_RATING_KEY;
 import static org.sonar.api.measures.CoreMetrics.SECURITY_RATING_KEY;
 import static org.sonar.api.measures.CoreMetrics.SQALE_RATING_KEY;
+import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_AUTHORIZATION_GROUPS;
+import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_AUTHORIZATION_USERS;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_MEASURES;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_MEASURES_KEY;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_MEASURES_VALUE;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_NAME;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.FIELD_QUALITY_GATE;
 import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.INDEX_PROJECT_MEASURES;
-import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.*;
+import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.TYPE_AUTHORIZATION;
+import static org.sonar.server.component.es.ProjectMeasuresIndexDefinition.TYPE_PROJECT_MEASURES;
 
 public class ProjectMeasuresIndex extends BaseIndex {
 
@@ -81,12 +85,13 @@ public class ProjectMeasuresIndex extends BaseIndex {
       .setQuery(esQuery)
       .setFrom(searchOptions.getOffset())
       .setSize(searchOptions.getLimit())
-      .addAggregation(createRangeFacet(DUPLICATED_LINES_DENSITY_KEY, ImmutableList.of(3d, 5d, 10d, 20d)))
-      .addAggregation(createRangeFacet(COVERAGE_KEY, ImmutableList.of(30d, 50d, 70d, 80d)))
-      .addAggregation(createRangeFacet(NCLOC_KEY, ImmutableList.of(1_000d, 10_000d, 100_000d, 500_000d)))
+      .addAggregation(createQualityGateFacet())
       .addAggregation(createRatingFacet(SQALE_RATING_KEY))
       .addAggregation(createRatingFacet(RELIABILITY_RATING_KEY))
       .addAggregation(createRatingFacet(SECURITY_RATING_KEY))
+      .addAggregation(createRangeFacet(DUPLICATED_LINES_DENSITY_KEY, ImmutableList.of(3d, 5d, 10d, 20d)))
+      .addAggregation(createRangeFacet(COVERAGE_KEY, ImmutableList.of(30d, 50d, 70d, 80d)))
+      .addAggregation(createRangeFacet(NCLOC_KEY, ImmutableList.of(1_000d, 10_000d, 100_000d, 500_000d)))
       .addSort(FIELD_NAME + "." + SORT_SUFFIX, SortOrder.ASC);
 
     return new SearchIdResult<>(request.get(), id -> id);
@@ -121,13 +126,20 @@ public class ProjectMeasuresIndex extends BaseIndex {
       .subAggregation(
         AggregationBuilders.filter("filter_" + metricKey)
           .filter(termsQuery(FIELD_KEY, metricKey))
-          .subAggregation(filters(metricKey)
+          .subAggregation(AggregationBuilders.filters(metricKey)
             .filter("1", termQuery(FIELD_VALUE, 1d))
             .filter("2", termQuery(FIELD_VALUE, 2d))
             .filter("3", termQuery(FIELD_VALUE, 3d))
             .filter("4", termQuery(FIELD_VALUE, 4d))
             .filter("5", termQuery(FIELD_VALUE, 5d))
           ));
+  }
+
+  private static AggregationBuilder createQualityGateFacet() {
+    return AggregationBuilders.filters(ALERT_STATUS_KEY)
+      .filter(Metric.Level.ERROR.name(), termQuery(FIELD_QUALITY_GATE, Metric.Level.ERROR.name()))
+      .filter(Metric.Level.WARN.name(), termQuery(FIELD_QUALITY_GATE, Metric.Level.WARN.name()))
+      .filter(Metric.Level.OK.name(), termQuery(FIELD_QUALITY_GATE, Metric.Level.OK.name()));
   }
 
   private QueryBuilder createEsQuery(ProjectMeasuresQuery query) {
